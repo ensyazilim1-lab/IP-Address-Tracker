@@ -45,7 +45,7 @@ function switchToFallbackLayer() {
     minZoom: 2,
   });
   activeLayer.addTo(map);
-  map.invalidateSize();
+  refreshMapSize();
 }
 
 function attachTileErrorHandler(layer) {
@@ -62,15 +62,33 @@ activeLayer.addTo(map);
 
 const marker = L.marker(defaultCoords, { icon: customIcon }).addTo(map);
 
+let resizeTimer = null;
+
 function refreshMapSize() {
-  requestAnimationFrame(() => {
+  clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
     map.invalidateSize({ pan: false });
-  });
+  }, 120);
 }
 
 window.addEventListener("resize", refreshMapSize);
-map.on("moveend", refreshMapSize);
-map.on("zoomend", refreshMapSize);
+
+function setLoadingState(isLoading) {
+  if (!isLoading) return;
+  ipValue.textContent = "Loading...";
+  locationValue.textContent = "Loading...";
+  timezoneValue.textContent = "Loading...";
+  ispValue.textContent = "Loading...";
+}
+
+function fetchWithTimeout(url, timeoutMs = 5000) {
+  const controller = new AbortController();
+  const timerId = setTimeout(() => controller.abort(), timeoutMs);
+
+  return fetch(url, { signal: controller.signal }).finally(() => {
+    clearTimeout(timerId);
+  });
+}
 
 function isValidCoordinates(lat, lng) {
   const numLat = Number(lat);
@@ -111,7 +129,7 @@ function isValidDomain(value) {
 }
 
 async function resolveDomainToIP(domain) {
-  const response = await fetch(
+  const response = await fetchWithTimeout(
     `https://dns.google/resolve?name=${encodeURIComponent(domain)}&type=A`
   );
   if (!response.ok) {
@@ -130,7 +148,7 @@ function formatTimezone(utcOffset) {
   return utcOffset.startsWith("UTC") ? utcOffset : `UTC ${utcOffset}`;
 }
 
-function updateUI(data) {
+function updateUI(data, shouldAnimate = true) {
   ipValue.textContent = data.ip || "-";
 
   const city = data.city || "";
@@ -149,7 +167,7 @@ function updateUI(data) {
   if (isValidCoordinates(data.latitude, data.longitude)) {
     const coords = [Number(data.latitude), Number(data.longitude)];
     marker.setLatLng(coords);
-    map.setView(coords, 13, { animate: true });
+    map.setView(coords, 13, { animate: shouldAnimate });
     refreshMapSize();
   } else {
     marker.setLatLng(defaultCoords);
@@ -158,7 +176,7 @@ function updateUI(data) {
   }
 }
 
-async function fetchIPData(query = "") {
+async function fetchIPData(query = "", isInitialLoad = false) {
   errorMessage.textContent = "";
 
   try {
@@ -169,6 +187,7 @@ async function fetchIPData(query = "") {
       if (isValidIP(cleaned)) {
         targetIP = cleaned;
       } else if (isValidDomain(cleaned)) {
+        setLoadingState(true);
         targetIP = await resolveDomainToIP(cleaned);
       } else {
         errorMessage.textContent = "Please enter a valid IP address or domain.";
@@ -176,11 +195,13 @@ async function fetchIPData(query = "") {
       }
     }
 
+    setLoadingState(true);
+
     const endpoint = targetIP
       ? `https://ipwho.is/${encodeURIComponent(targetIP)}`
       : "https://ipwho.is/";
 
-    const response = await fetch(endpoint);
+    const response = await fetchWithTimeout(endpoint);
     if (!response.ok) {
       throw new Error("Network response was not ok.");
     }
@@ -190,19 +211,23 @@ async function fetchIPData(query = "") {
       throw new Error(data.message || "Unable to fetch IP details.");
     }
 
-    updateUI(data);
+    updateUI(data, !isInitialLoad);
   } catch (error) {
-    errorMessage.textContent =
-      error.message || "Something went wrong. Please try again.";
+    if (error.name === "AbortError") {
+      errorMessage.textContent = "Request timed out. Please try again.";
+    } else {
+      errorMessage.textContent =
+        error.message || "Something went wrong. Please try again.";
+    }
   }
 }
 
 ipForm.addEventListener("submit", (event) => {
   event.preventDefault();
-  fetchIPData(ipInput.value);
+  fetchIPData(ipInput.value, false);
 });
 
 window.addEventListener("DOMContentLoaded", () => {
-  fetchIPData();
+  fetchIPData("", true);
   refreshMapSize();
 });
